@@ -1,0 +1,21 @@
+# Environnement
+.env
+.env.local
+.env.*.local
+
+# Dépendances
+/vendor/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# backups
+*.bak
+*.tmp
+*.swp
+*~
