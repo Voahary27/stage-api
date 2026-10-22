@@ -59,27 +59,87 @@ $stmt = $db->prepare($sql);
 $stmt->execute([':matricule' => $matricule]);
 $refusees = (int) $stmt->fetchColumn();
 
+// demandes avec details 
 $sql = "SELECT
-            demande_id,
-            demande_type,
-            demande_motif,
-            demande_date_debut,
-            demande_date_fin,
-            demande_date_creation,
-            demande_status,
-            demande_niveau_validation,
-            demande_lieu_jouissance,
-            demande_matricule_decision,
-            demande_date_decision,
-            demande_motif_refus
-        FROM DEMANDE
-        WHERE utilisateur_matricule = :matricule
-        ORDER BY demande_date_creation DESC
+            d.demande_id,
+            d.demande_type,
+            d.demande_motif,
+            d.demande_date_debut,
+            d.demande_date_fin,
+            d.demande_date_creation,
+            d.demande_status,
+            d.demande_niveau_validation,
+            d.demande_lieu_jouissance,
+            d.demande_matricule_decision,
+            d.demande_date_decision,
+            d.demande_motif_refus,
+            v.utilisateur_nom    AS validateur_nom,
+            v.utilisateur_prenom AS validateur_prenom
+        FROM DEMANDE d
+        LEFT JOIN UTILISATEUR v ON v.utilisateur_matricule = d.demande_matricule_decision
+        WHERE d.utilisateur_matricule = :matricule
+        ORDER BY d.demande_date_creation DESC
         LIMIT 20";
 
 $stmt = $db->prepare($sql);
 $stmt->execute([':matricule' => $matricule]);
 $demandes = $stmt->fetchAll();
+
+
+foreach ($demandes as &$d) {
+    $d['nb_jours']     = 0;
+    $d['ventilation']  = [];
+    $d['titre_annees'] = '';
+
+    if ($d['demande_type'] === 'conge' && $d['demande_date_fin']) {
+        $debut = new DateTime($d['demande_date_debut']);
+        $fin   = new DateTime($d['demande_date_fin']);
+        $d['nb_jours'] = $debut->diff($fin)->days + 1;
+
+        if ($d['demande_status'] === 'acceptee') {
+            $stmtDet = $db->prepare(
+                "SELECT solde_annuel_annee, jours_deduit
+                 FROM DEMANDE_DETAIL
+                 WHERE demande_id = :id
+                 ORDER BY solde_annuel_annee ASC"
+            );
+            $stmtDet->execute([':id' => $d['demande_id']]);
+            foreach ($stmtDet->fetchAll() as $det) {
+                $d['ventilation'][] = [
+                    'annee' => (int) $det['solde_annuel_annee'],
+                    'jours' => (int) $det['jours_deduit']
+                ];
+            }
+        } elseif ($d['demande_status'] === 'en_attente') {
+            $stmtSolde = $db->prepare(
+                "SELECT solde_annuel_annee, solde_annuel_valeur
+                 FROM SOLDE_ANNUEL
+                 WHERE utilisateur_matricule = :m
+                   AND solde_annuel_valeur > 0
+                 ORDER BY solde_annuel_annee ASC"
+            );
+            $stmtSolde->execute([':m' => $matricule]);
+            $soldes = $stmtSolde->fetchAll();
+
+            $reste = $d['nb_jours'];
+            foreach ($soldes as $s) {
+                if ($reste <= 0) break;
+                $annee  = (int) $s['solde_annuel_annee'];
+                $dispo  = (int) $s['solde_annuel_valeur'];
+                $deduit = min($reste, $dispo);
+                $reste -= $deduit;
+                $d['ventilation'][] = ['annee' => $annee, 'jours' => $deduit];
+            }
+        }
+
+        if (!empty($d['ventilation'])) {
+            $d['titre_annees'] = implode(', ', array_column($d['ventilation'], 'annee'));
+        }
+    }
+
+    $d['demande_id'] = (int) $d['demande_id'];
+}
+unset($d);
 
 echo json_encode([
     "success" => true,

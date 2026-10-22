@@ -23,6 +23,9 @@ $sql = "SELECT
             u.utilisateur_nom,
             u.utilisateur_prenom,
             u.utilisateur_service,
+            u.utilisateur_fonction,
+            u.utilisateur_corps,
+            u.utilisateur_direction,
             s.service_nom,
             v.utilisateur_nom    AS validateur_nom,
             v.utilisateur_prenom AS validateur_prenom
