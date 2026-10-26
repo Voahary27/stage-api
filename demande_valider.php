@@ -4,7 +4,7 @@ require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/config/database.php';
 
 $validator = requireAuth();
-$db        = (new Database())->getConnection();
+$db = (new Database())->getConnection();
 
 $data = json_decode(file_get_contents("php://input"), true);
 
@@ -27,6 +27,7 @@ if ($decision === 'refusee' && empty(trim($motifRefus))) {
 try {
     $db->beginTransaction();
 
+    // 1. Récupérer la demande
     $stmt = $db->prepare("SELECT * FROM DEMANDE WHERE demande_id = :id FOR UPDATE");
     $stmt->execute([':id' => $demandeId]);
     $demande = $stmt->fetch();
@@ -45,8 +46,9 @@ try {
         exit();
     }
 
-    $stmt = $db->prepare("SELECT utilisateur_role FROM UTILISATEUR WHERE utilisateur_matricule = :matricule");
-    $stmt->execute([':matricule' => $validator->matricule]);
+    // 2. Récupérer le rôle du validateur
+    $stmt = $db->prepare("SELECT utilisateur_role FROM UTILISATEUR WHERE utilisateur_matricule = :m");
+    $stmt->execute([':m' => $validator->matricule]);
     $role = $stmt->fetchColumn();
 
     $niveauActuel = (int) $demande['demande_niveau_validation'];
@@ -68,17 +70,29 @@ try {
         exit();
     }
 
-    // ─── REFUS 
+    // 3. INSERT dans DEMANDE_VALIDATION (traçabilité)
+    $roleValidation = $role === 'admin' ? 'directeur' : $role;
+
+    $db->prepare(
+        "INSERT INTO DEMANDE_VALIDATION
+            (demande_id, validation_matricule, validation_role, validation_decision)
+         VALUES
+            (:id, :matricule, :role, :decision)"
+    )->execute([
+        ':id'        => $demandeId,
+        ':matricule' => $validator->matricule,
+        ':role'      => $roleValidation,
+        ':decision'  => $decision
+    ]);
+
+    // 4. REFUS
     if ($decision === 'refusee') {
         $db->prepare(
             "UPDATE DEMANDE
              SET demande_status              = 'refusee',
-                 demande_matricule_decision  = :validateur,
-                 demande_date_decision       = CURRENT_TIMESTAMP,
                  demande_motif_refus         = :motif
              WHERE demande_id = :id"
         )->execute([
-            ':validateur' => $validator->matricule,
             ':motif'      => trim($motifRefus),
             ':id'         => $demandeId
         ]);
@@ -88,10 +102,11 @@ try {
         exit();
     }
 
-    // ─── ACCEPTATION 
+    // 5. ACCEPTATION
     $nouveauNiveau = $niveauActuel + 1;
     $devientAcceptee = ($nouveauNiveau === 3);
 
+    // Si acceptée définitivement + congé → FIFO
     if ($devientAcceptee && $demande['demande_type'] === 'conge') {
         $matricule = $demande['utilisateur_matricule'];
 
@@ -102,26 +117,23 @@ try {
         $stmt = $db->prepare(
             "SELECT solde_annuel_annee, solde_annuel_valeur
              FROM SOLDE_ANNUEL
-             WHERE utilisateur_matricule = :matricule
+             WHERE utilisateur_matricule = :m
                AND solde_annuel_valeur > 0
              ORDER BY solde_annuel_annee ASC
              FOR UPDATE"
         );
-        $stmt->execute([':matricule' => $matricule]);
+        $stmt->execute([':m' => $matricule]);
         $soldes = $stmt->fetchAll();
 
         $totalDispo = 0;
-        foreach ($soldes as $s) {
-            $totalDispo += (int) $s['solde_annuel_valeur'];
-        }
+        foreach ($soldes as $s) $totalDispo += (int) $s['solde_annuel_valeur'];
 
         if ($totalDispo < $nbJours) {
             $db->rollBack();
             http_response_code(400);
             echo json_encode([
                 "success" => false,
-                "message" => "Solde insuffisant pour valider cette demande",
-                "detail"  => "Demandé : $nbJours j, disponible : $totalDispo j"
+                "message" => "Solde insuffisant pour valider cette demande"
             ]);
             exit();
         }
@@ -138,22 +150,13 @@ try {
             $db->prepare(
                 "INSERT INTO DEMANDE_DETAIL (demande_id, solde_annuel_annee, jours_deduit)
                  VALUES (:id, :annee, :jours)"
-            )->execute([
-                ':id'    => $demandeId,
-                ':annee' => $annee,
-                ':jours' => $deduit
-            ]);
+            )->execute([':id' => $demandeId, ':annee' => $annee, ':jours' => $deduit]);
 
             $db->prepare(
                 "UPDATE SOLDE_ANNUEL
                  SET solde_annuel_valeur = solde_annuel_valeur - :deduit
-                 WHERE utilisateur_matricule = :matricule
-                   AND solde_annuel_annee = :annee"
-            )->execute([
-                ':deduit'    => $deduit,
-                ':matricule' => $matricule,
-                ':annee'     => $annee
-            ]);
+                 WHERE utilisateur_matricule = :m AND solde_annuel_annee = :annee"
+            )->execute([':deduit' => $deduit, ':m' => $matricule, ':annee' => $annee]);
         }
     }
 
@@ -163,20 +166,19 @@ try {
         "UPDATE DEMANDE
          SET demande_niveau_validation   = :niveau,
              demande_status              = :status,
-             demande_matricule_decision  = :validateur,
-             demande_date_decision       = CURRENT_TIMESTAMP
          WHERE demande_id = :id"
     )->execute([
         ':niveau'     => $nouveauNiveau,
         ':status'     => $nouveauStatus,
-        ':validateur' => $validator->matricule,
         ':id'         => $demandeId
     ]);
 
     $db->commit();
     echo json_encode([
         "success" => true,
-        "message" => $devientAcceptee ? "Demande acceptée définitivement" : "Demande validée, transmise au niveau suivant"
+        "message" => $devientAcceptee
+            ? "Demande acceptée définitivement"
+            : "Demande validée, transmise au niveau suivant"
     ]);
 
 } catch (Throwable $e) {

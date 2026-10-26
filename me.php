@@ -90,6 +90,7 @@ foreach ($demandes as &$d) {
     $d['nb_jours']     = 0;
     $d['ventilation']  = [];
     $d['titre_annees'] = '';
+    $d['validations']  = [];
 
     if ($d['demande_type'] === 'conge' && $d['demande_date_fin']) {
         $debut = new DateTime($d['demande_date_debut']);
@@ -136,6 +137,21 @@ foreach ($demandes as &$d) {
             $d['titre_annees'] = implode(', ', array_column($d['ventilation'], 'annee'));
         }
     }
+    $stmtVal = $db->prepare(
+        "SELECT
+            dv.validation_matricule,
+            dv.validation_role,
+            dv.validation_decision,
+            dv.validation_date,
+            u.utilisateur_nom,
+            u.utilisateur_prenom
+         FROM DEMANDE_VALIDATION dv
+         INNER JOIN UTILISATEUR u ON u.utilisateur_matricule = dv.validation_matricule
+         WHERE dv.demande_id = :id
+         ORDER BY dv.validation_date ASC"
+    );
+    $stmtVal->execute([':id' => $d['demande_id']]);
+    $d['validations'] = $stmtVal->fetchAll();
 
     $d['demande_id'] = (int) $d['demande_id'];
 }

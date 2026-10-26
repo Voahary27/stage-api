@@ -42,17 +42,24 @@ $demandes = $stmt->fetchAll();
 $result = [];
 
 foreach ($demandes as $d) {
+// ═══ Cast des IDs AVANT les requêtes ═══
+    $d['demande_id']                = (int) $d['demande_id'];
+    $d['demande_niveau_validation'] = (int) $d['demande_niveau_validation'];
 
+    // ═══ Initialisation ═══
     $d['nb_jours']     = 0;
     $d['ventilation']  = [];
     $d['titre_annees'] = '';
+    $d['validations']  = [];
 
+    // ═══ Calcul nb_jours + ventilation (congé) ═══
     if ($d['demande_type'] === 'conge' && $d['demande_date_fin']) {
 
         $debut = new DateTime($d['demande_date_debut']);
         $fin   = new DateTime($d['demande_date_fin']);
         $d['nb_jours'] = $debut->diff($fin)->days + 1;
 
+        // Si ACCEPTÉE → ventilation figée (DEMANDE_DETAIL)
         if ($d['demande_status'] === 'acceptee') {
             $sqlDetail = "SELECT solde_annuel_annee, jours_deduit
                           FROM DEMANDE_DETAIL
@@ -68,6 +75,7 @@ foreach ($demandes as $d) {
                 ];
             }
         }
+        // Si EN ATTENTE → ventilation simulée (FIFO)
         elseif ($d['demande_status'] === 'en_attente') {
             $sqlSolde = "SELECT solde_annuel_annee, solde_annuel_valeur
                          FROM SOLDE_ANNUEL
@@ -88,16 +96,33 @@ foreach ($demandes as $d) {
                 $d['ventilation'][] = ['annee' => $annee, 'jours' => $deduit];
             }
         }
+        // Si REFUSÉE → pas de ventilation
 
         if (!empty($d['ventilation'])) {
             $d['titre_annees'] = implode(', ', array_column($d['ventilation'], 'annee'));
         }
     }
 
-    $d['demande_id']                = (int) $d['demande_id'];
-    $d['demande_niveau_validation'] = (int) $d['demande_niveau_validation'];
+    // ═══ NOUVEAU : récupérer les validations ═══
+    $stmtVal = $db->prepare(
+        "SELECT
+            dv.validation_matricule,
+            dv.validation_role,
+            dv.validation_decision,
+            dv.validation_date,
+            u.utilisateur_nom,
+            u.utilisateur_prenom
+         FROM DEMANDE_VALIDATION dv
+         INNER JOIN UTILISATEUR u ON u.utilisateur_matricule = dv.validation_matricule
+         WHERE dv.demande_id = :id
+         ORDER BY dv.validation_date ASC"
+    );
+    $stmtVal->execute([':id' => $d['demande_id']]);
+    $d['validations'] = $stmtVal->fetchAll();
 
+    // ═══ Ajout au résultat ═══
     $result[] = $d;
+   
 }
 
 echo json_encode([
